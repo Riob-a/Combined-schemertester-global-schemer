@@ -95,6 +95,7 @@ def main():
     parser.add_argument("--prompt-deploy", action="store_true")
     parser.add_argument("--escape", action="store_true")
     parser.add_argument("--dry-only", action="store_true")
+    parser.add_argument("--folder", type=str, default=None, help="Folder to scan for .xlsx files in auto mode")
     parser.add_argument(
         "--use-export-only",
         action="store_true",
@@ -161,11 +162,36 @@ def main():
 
     # ---- Auto mode confirmation ----
     if args.mode == "auto" and not args.no_confirm:
-        print(Fore.YELLOW + "Auto mode will process all .xlsx files in the current folder.")
-        confirm = safe_input("Continue? (y/n) [type exit, quit, or q to stop]: ")
-        if confirm != "y":
-            print(Style.BRIGHT + Fore.CYAN + "Switching to manual mode...")
+        # print(Fore.YELLOW + "Auto mode will process all .xlsx files in the current folder.")
+        # confirm = safe_input("Continue? (y/n) [type exit, quit, or q to stop]: ")
+        print(Fore.YELLOW + "\nSelect mode [type exit, quit, or q to stop]:")
+        print("  1 - Auto   (scan a folder for all .xlsx files)")
+        print("  2 - Manual (select a single .xlsx file)")
+        mode_choice = safe_input("Enter choice (1/2): ")
+
+        if mode_choice == "2":
             args.mode = "manual"
+        else:
+            # Auto mode — ask for folder
+            folder_input = safe_input("Enter folder path (or press Enter for current directory): ")
+            search_dir = Path(folder_input).resolve() if folder_input else Path.cwd()
+
+            if not search_dir.is_dir():
+                print(Fore.RED + f"Folder not found: {search_dir}")
+                return
+
+            excel_files = [
+                str(p) for p in search_dir.glob("*.xlsx")
+                if not p.name.startswith("~$")
+            ]
+
+            if not excel_files:
+                print(Fore.RED + "No .xlsx files found in that folder.")
+                return
+        
+        # if confirm != "y":
+        #     print(Style.BRIGHT + Fore.CYAN + "Switching to manual mode...")
+        #     args.mode = "manual"
 
     # ---- Manual file selection ----
     if args.mode == "manual" and not args.file:
@@ -191,7 +217,13 @@ def main():
             raise FileNotFoundError(f"Manual mode requires a valid --file argument.")
         excel_files = [args.file]
     else:
-        excel_files = [f for f in glob.glob("*.xlsx") if not f.startswith("~$")]
+        # excel_files = [f for f in glob.glob("*.xlsx") if not f.startswith("~$")]
+        search_dir = Path(args.folder).resolve() if args.folder else Path.cwd()
+        excel_files = [
+            str(p) for p in search_dir.glob("*.xlsx")
+            if not p.name.startswith("~$")
+        ]
+
         if not excel_files:
             raise FileNotFoundError(Fore.RED + "No Excel files found for auto mode.")
 
