@@ -9,7 +9,7 @@ from pathlib import Path
 from colorama import init, Fore, Style
 import json
 
-from build_global_schemas_final import build_global_schemas, BuildMode
+from build_global_schemas_final_test import build_global_schemas, BuildMode
 
 # ─────────────────────────────────────────────
 # CONFIGURE YOUR SERVER DIRECTORIES HERE
@@ -275,6 +275,12 @@ def main():
                 output_path = output_dir / f"{conservancy}_deployed_schemas_{timestamp}.xlsx"
                 df_out.to_excel(output_path, index=False)
                 print(Fore.GREEN + f"Generated: {output_path}")
+
+                # ---- Per-conservancy JSON ----
+                conservancy_json_path = output_dir / f"{conservancy}_deployed_schemas_{timestamp}.json"
+                with open(conservancy_json_path, "w", encoding="utf-8") as f:
+                    json.dump(schemas, f, ensure_ascii=False, indent=2)
+                print(Fore.GREEN + f"Generated JSON: {conservancy_json_path}")
 
                 merged_schemas.extend(schemas)
 
