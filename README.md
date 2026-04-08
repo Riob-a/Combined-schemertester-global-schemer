@@ -10,7 +10,7 @@ Each conservancy has its own EarthRanger server with its own event-type schemas.
 
 1. **Preview** — do a dry run across all conservancy files to see which schemas are deployable, without touching any server or writing any files.
 2. **Export** — validate schemas against a live server JSON export, then write the output to disk as Excel and JSON files.
-3. **Deploy** — same as Export, but explicitly intended for production use.
+3. **Deploy** — same as Export — use this label to indicate a production deployment.
 
 ---
 
@@ -23,12 +23,19 @@ Each conservancy has its own EarthRanger server with its own event-type schemas.
 ├── build_global_schemas_final_test.py # Alternate/test version of the core library
 ├── run_build_final_test.py            # Alternate/test runner (uses test library)
 ├── global_schema_registry.xlsx        # Master registry of all schema IDs across servers
-├── schemas-borana.xlsx                # Conservancy-specific schema definitions
+├── schemas-borana.xlsx                # Conservancy-specific schema definitions (root copies)
 ├── schemas-mugie.xlsx
 ├── schemas-sosian.xlsx
 ├── schemas-suiyan.xlsx
 ├── schemas-catalyse.xlsx
 ├── schemas-test.xlsx
+├── excel files/                       # Working copies of the same schema spreadsheets
+│   ├── schemas-borana.xlsx
+│   ├── schemas-mugie.xlsx
+│   ├── schemas-sosian.xlsx
+│   ├── schemas-suiyan.xlsx
+│   ├── schemas-catalyse.xlsx
+│   └── schemas-test.xlsx
 └── data/
     └── servers/
         └── <ServerName>/
@@ -36,6 +43,25 @@ Each conservancy has its own EarthRanger server with its own event-type schemas.
                 └── Configuration/
                     └── eventtype_schemas_<timestamp>.json  # Exported from live server
 ```
+
+> **Note:** The `excel files/` subfolder and the root-level `schemas-*.xlsx` files contain the same schema spreadsheets. When running the script, use `--folder "excel files"` (or provide the path interactively) to target the subfolder, or omit `--folder` to scan the project root.
+
+---
+
+## Server Configuration
+
+The active server directories are defined at the top of `run_build_final_cl.py`:
+
+```python
+SERVER_CONFIG_DIRS = {
+    "Borana": Path("data/servers/Borana/EarthRanger/Configuration"),
+    "Mugie":  Path("data/servers/Mugie/EarthRanger/Configuration"),
+}
+```
+
+Only **Borana** and **Mugie** have server-side JSON exports configured. Schemas for Sosian, Suiyan, Catalyse, and Test are processed from their Excel files but validated against the Borana or Mugie exports depending on which schema ID columns are populated. If no export is available for a source server, that server falls back to unvalidated (preview) mode automatically.
+
+To add a new server, add an entry to `SERVER_CONFIG_DIRS` and place its JSON export under `data/servers/<ServerName>/EarthRanger/Configuration/`.
 
 ---
 
@@ -81,26 +107,40 @@ The script automatically picks up the **most recently modified** export file in 
 
 ## Running the Script
 
-The main entry point is `run_build_final_cl.py`. Run it from the project root directory (the folder containing the `.xlsx` files).
+The main entry point is `run_build_final_cl.py`. Run it from the project root directory.
 
-### Dry Run (Preview all conservancies)
+### Interactive dry run (default)
 
 ```bash
 python run_build_final_cl.py
 ```
 
-This runs in **auto mode** — it finds all `.xlsx` files in the current directory, processes each one in `PREVIEW` mode (no server validation, no file writes), and prints a summary of deployable schemas per conservancy. You'll be prompted to confirm before it starts.
+Without flags, the script prompts you to choose **Auto** (scan a folder for all `.xlsx` files) or **Manual** (select a single file). In Auto mode you are also prompted for a folder path — press Enter to use the current directory, or type a path such as `excel files`.
 
-### Skip the prompt
+### Skip the confirmation prompt
 
 ```bash
 python run_build_final_cl.py --no-confirm
 ```
 
+### Scan a specific folder for `.xlsx` files
+
+```bash
+python run_build_final_cl.py --folder "excel files"
+```
+
+This is the non-interactive equivalent of typing the folder path at the Auto-mode prompt.
+
 ### Dry run only (no deployment prompt at the end)
 
 ```bash
 python run_build_final_cl.py --dry-only
+```
+
+### Verbose dry run (print per-schema breakdown)
+
+```bash
+python run_build_final_cl.py --verbose
 ```
 
 ### Process a single file manually
@@ -115,7 +155,7 @@ python run_build_final_cl.py --mode manual --file schemas-borana.xlsx
 python run_build_final_cl.py --use-export-only
 ```
 
-This ignores all Excel files and builds schemas directly from the Borana server's JSON export. Useful for a quick audit of what's currently live.
+Ignores all Excel files and builds schemas directly from the **Borana** server's JSON export (the path defined in `SERVER_CONFIG_DIRS["Borana"]`). Useful for a quick audit of what is currently live on Borana.
 
 ---
 
@@ -133,9 +173,10 @@ In `PREVIEW` mode, schemas are returned with templated placeholders for enum fie
 
 ## Output Files
 
-When you confirm deployment after a dry run, the script creates a `deploy_output/` folder containing:
+After a dry run, if you confirm deployment at the prompt, the script creates a `deploy_output/` folder containing:
 
 - **`<conservancy>_deployed_schemas_<timestamp>.xlsx`** — one Excel file per conservancy with full schema details.
+- **`<conservancy>_deployed_schemas_<timestamp>.json`** — one JSON file per conservancy with the same data.
 - **`global_deployed_schemas_<timestamp>.json`** — a merged JSON file with all deployable schemas across all conservancies.
 
 ---
