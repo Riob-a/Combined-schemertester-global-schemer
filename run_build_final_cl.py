@@ -60,8 +60,6 @@ def main():
     parser.add_argument("--mode", choices=["manual", "auto"], default="auto")
     parser.add_argument("--file", type=str, default=None)
     parser.add_argument("--no-confirm", action="store_true")
-    parser.add_argument("--deploy", action="store_true")
-    parser.add_argument("--prompt-deploy", action="store_true")
     parser.add_argument("--escape", action="store_true")
     parser.add_argument("--dry-only", action="store_true")
     parser.add_argument("--folder", type=str, default=None, help="Folder to scan for .xlsx files in auto mode")
@@ -142,6 +140,9 @@ def main():
         return
 
     # ---- Auto mode confirmation ----
+    # NOTE: When --no-confirm is set, this block is skipped entirely.
+    # excel_files is populated further below via args.folder or Path.cwd(),
+    # so both paths lead to the same result — but they are intentionally separate.
     if args.mode == "auto" and not args.no_confirm:
         print(Fore.YELLOW + "\nSelect mode [type exit, quit, or q to stop]:")
         print("  1 - Auto   (scan a folder for all .xlsx files)")
@@ -251,12 +252,24 @@ def main():
 
     if args.dry_only:
         print(Fore.YELLOW + "\nDry run complete (--dry-only).")
+        if args.verbose:
+            print_dry_run_detail(grouped_deployed)
         return
+
+    if args.verbose:
+        print_dry_run_detail(grouped_deployed)
 
 # ---- Deployment stage prompt ----
     if grouped_deployed:
         # Prompt user after displaying summaries
-        confirm = safe_input(Style.BRIGHT + Fore.CYAN + "\nDo you want to generate Excel/JSON files for deployable schemas? (y/n): ")
+        confirm = safe_input(
+            Style.BRIGHT + Fore.CYAN +
+            "\nDo you want to generate Excel/JSON files for deployable schemas?\n"
+            + Fore.YELLOW
+            + "  ⚠ Note: these files contain PREVIEW-mode schemas (enum placeholders, not live values).\n"
+            + Style.BRIGHT + Fore.CYAN
+            + "  (y/n): "
+        )
 
         if confirm == "y":
             output_dir = Path("deploy_output")

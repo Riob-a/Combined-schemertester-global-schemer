@@ -52,6 +52,35 @@ def make_choice_core(prop_name: str) -> str:
     return prop_name
 
 
+def _templatise_properties(props: Dict[str, Any], prop_path: str = "") -> None:
+    """Recursively templatise enum fields at any nesting depth."""
+    for prop_name, field in props.items():
+        if not isinstance(field, dict):
+            continue
+
+        full_name = f"{prop_path}.{prop_name}" if prop_path else prop_name
+
+        if "enum" in field:
+            core = make_choice_core(full_name)
+            key = f"{CHOICE_PREFIX}{core}"
+            field["enum"] = f"{{{{{key}{CHOICE_VALUES_SUFFIX}}}}}"
+            field["enumNames"] = f"{{{{{key}{CHOICE_NAMES_SUFFIX}}}}}"
+            field.pop("enumImages", None)
+            field.pop("inactive_enum", None)
+
+        # Recurse into sub-object properties
+        if "properties" in field and isinstance(field["properties"], dict):
+            _templatise_properties(field["properties"], full_name)
+
+        # Recurse into array item properties
+        if (
+            field.get("type") == "array"
+            and isinstance(field.get("items"), dict)
+            and isinstance(field["items"].get("properties"), dict)
+        ):
+            _templatise_properties(field["items"]["properties"], f"{full_name}[]")
+
+
 def templatised_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
     sch = copy.deepcopy(schema)
 
@@ -63,20 +92,7 @@ def templatised_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(props, dict):
         return sch
 
-    for prop_name, field in props.items():
-        if not isinstance(field, dict):
-            continue
-
-        if "enum" in field:
-            core = make_choice_core(prop_name)
-            key = f"{CHOICE_PREFIX}{core}"
-
-            field["enum"] = f"{{{{{key}{CHOICE_VALUES_SUFFIX}}}}}"
-            field["enumNames"] = f"{{{{{key}{CHOICE_NAMES_SUFFIX}}}}}"
-
-            field.pop("enumImages", None)
-            field.pop("inactive_enum", None)
-
+    _templatise_properties(props)
     return sch
 
 
@@ -217,9 +233,9 @@ def build_global_schemas(
             system_count += 1
             continue
 
-        legacy_id = (row.get("event_category_id", "") or "").strip()
-        borana_id = (row.get("borana_schema_id", "") or "").strip()
-        mugie_id = (row.get("mugie_schema_id", "") or "").strip()
+        legacy_id = str(row.get("event_category_id") or "").strip()
+        borana_id = str(row.get("borana_schema_id") or "").strip()
+        mugie_id = str(row.get("mugie_schema_id") or "").strip()
 
         source_server = None
         schema_id = None
@@ -280,6 +296,13 @@ def build_global_schemas(
         api_version_final = api_version
         if not api_version_final and rec:
             api_version_final = rec.get("api_version")
+        if not api_version_final:
+            logger.warning(
+                "Missing api_version for event_value=%r (schema_id=%s, server=%s)",
+                event_value,
+                schema_id,
+                source_server,
+            )
 
         deployed.append(
             {
