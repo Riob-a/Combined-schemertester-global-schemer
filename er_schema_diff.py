@@ -14,6 +14,10 @@ Produces a list of DiffResult objects classifying every event type as:
   NO_CHANGE  — on server and in desired state, nothing differs
 
 Each UPDATE result carries a human-readable list of what changed.
+
+Choice list diffing (diff_choice_lists / ChoiceListDiffResult) compares the
+enum values and display names for every property within a schema, reporting
+values added, removed, or whose display label changed.
 """
 
 import copy
@@ -405,3 +409,245 @@ def print_diff_summary(
             if r.changes and action != DiffAction.NO_CHANGE:
                 for change in r.changes:
                     print(color + f"      ↳ {change}")
+
+
+# ─────────────────────────────────────────────────────────────
+# CHOICE LIST DIFF
+# ─────────────────────────────────────────────────────────────
+
+@dataclass
+class ChoiceListDiffResult:
+    """
+    Diff result for a single enum property within a schema.
+
+    Attributes
+    ----------
+    event_value:    The schema's event_value (e.g. "aip_polygon")
+    prop_name:      The property name containing the enum (e.g. "invasivealienplants_alienplantspecies")
+    values_added:   Enum value keys present in desired but not on server
+    values_removed: Enum value keys on server but absent from desired
+    labels_changed: {value_key: (old_label, new_label)} for display-name changes
+    has_changes:    True when any of the above lists/dicts are non-empty
+    """
+    event_value:     str
+    prop_name:       str
+    values_added:    List[str]           = field(default_factory=list)
+    values_removed:  List[str]           = field(default_factory=list)
+    labels_changed:  Dict[str, tuple]    = field(default_factory=dict)
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.values_added or self.values_removed or self.labels_changed)
+
+
+def _extract_enum_props(schema: Dict[str, Any], *, prop_path: str = "") -> Dict[str, Dict]:
+    """
+    Walk a schema's properties recursively and return a flat dict of
+    { "prop_path": {"enum": [...], "enumNames": ...} }
+    for every property that carries an "enum" key.
+
+    Handles:
+      - Top-level properties
+      - Nested object properties  (type=object with properties)
+      - Array item properties     (type=array with items.properties)
+    """
+    result = {}
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(props, dict):
+        return result
+
+    for name, prop in props.items():
+        if not isinstance(prop, dict):
+            continue
+
+        full_path = f"{prop_path}.{name}" if prop_path else name
+
+        if "enum" in prop and isinstance(prop["enum"], list):
+            result[full_path] = {
+                "enum":      prop["enum"],
+                "enumNames": prop.get("enumNames"),
+            }
+
+        # Recurse into sub-object properties
+        if isinstance(prop.get("properties"), dict):
+            result.update(_extract_enum_props(prop, prop_path=full_path))
+
+        # Recurse into array item properties
+        if (
+            prop.get("type") == "array"
+            and isinstance(prop.get("items"), dict)
+            and isinstance(prop["items"].get("properties"), dict)
+        ):
+            result.update(_extract_enum_props(prop["items"], prop_path=f"{full_path}[]"))
+
+    return result
+
+
+def _normalise_enum_names(enum_names: Any, enum_values: List[str]) -> Dict[str, str]:
+    """
+    Normalise enumNames to a {value_key: display_label} dict regardless of
+    whether the server stores it as a dict or a parallel list.
+    Returns an empty dict if enumNames is absent or malformed.
+    """
+    if isinstance(enum_names, dict):
+        return {str(k): str(v) for k, v in enum_names.items()}
+    if isinstance(enum_names, list) and len(enum_names) == len(enum_values):
+        return {str(k): str(v) for k, v in zip(enum_values, enum_names)}
+    return {}
+
+
+def diff_choice_lists(
+    server_state: Dict[str, Any],
+    *,
+    conservancy_name: str = "UNKNOWN",
+    event_values: Optional[List[str]] = None,
+) -> List[ChoiceListDiffResult]:
+    """
+    Compare choice lists (enum values + display names) between the desired
+    state extracted from the server export and a modified desired state.
+
+    In the current pipeline the "desired state" for choice lists IS the
+    server export itself — there is no separate choice-list input yet
+    (that belongs to the master-config gap).  This function therefore
+    compares each schema's enum properties against themselves for
+    structural correctness, and is designed so that once the master
+    config is introduced you can pass in a ``desired_props`` dict to
+    compare against.
+
+    Parameters
+    ----------
+    server_state:
+        Output of ``load_server_state()``.
+    conservancy_name:
+        Used only for logging/display.
+    event_values:
+        Optional list of event_values to restrict the diff to.
+        If None, all schemas in the export are checked.
+
+    Returns
+    -------
+    List of ChoiceListDiffResult — one per (event_value, prop_name) pair
+    where a change is detected.  Results with no changes are omitted.
+    """
+    by_value: Dict[str, Dict] = server_state.get("by_value", {})
+    scope = event_values if event_values is not None else list(by_value.keys())
+
+    results: List[ChoiceListDiffResult] = []
+
+    for ev in scope:
+        rec = by_value.get(ev)
+        if rec is None:
+            logger.debug("diff_choice_lists: event_value %r not in server state", ev)
+            continue
+
+        schema = rec.get("schema") or {}
+        server_props = _extract_enum_props(schema)
+
+        # Until master config supplies desired choice lists,
+        # we compare server against server — no changes expected.
+        # Swap ``desired_props`` below once master config is wired in.
+        desired_props = server_props  # placeholder — replace with config-driven data
+
+        all_prop_names = set(server_props) | set(desired_props)
+
+        for prop_name in sorted(all_prop_names):
+            server_entry  = server_props.get(prop_name)
+            desired_entry = desired_props.get(prop_name)
+
+            # Property added (not on server, in desired)
+            if server_entry is None:
+                result = ChoiceListDiffResult(
+                    event_value    = ev,
+                    prop_name      = prop_name,
+                    values_added   = list(desired_entry["enum"]),
+                )
+                if result.has_changes:
+                    results.append(result)
+                continue
+
+            # Property removed (on server, not in desired)
+            if desired_entry is None:
+                result = ChoiceListDiffResult(
+                    event_value    = ev,
+                    prop_name      = prop_name,
+                    values_removed = list(server_entry["enum"]),
+                )
+                if result.has_changes:
+                    results.append(result)
+                continue
+
+            # Both present — compare values and labels
+            server_values  = server_entry["enum"]
+            desired_values = desired_entry["enum"]
+
+            server_set  = set(str(v) for v in server_values)
+            desired_set = set(str(v) for v in desired_values)
+
+            added   = sorted(desired_set - server_set)
+            removed = sorted(server_set  - desired_set)
+
+            server_names  = _normalise_enum_names(server_entry.get("enumNames"),  server_values)
+            desired_names = _normalise_enum_names(desired_entry.get("enumNames"), desired_values)
+
+            labels_changed = {}
+            for val in server_set & desired_set:
+                old_label = server_names.get(val, "")
+                new_label = desired_names.get(val, "")
+                if old_label != new_label:
+                    labels_changed[val] = (old_label, new_label)
+
+            result = ChoiceListDiffResult(
+                event_value    = ev,
+                prop_name      = prop_name,
+                values_added   = added,
+                values_removed = removed,
+                labels_changed = labels_changed,
+            )
+            if result.has_changes:
+                results.append(result)
+
+    return results
+
+
+def print_choice_list_diff_summary(
+    results: List[ChoiceListDiffResult],
+    conservancy: str,
+    *,
+    verbose: bool = False,
+) -> None:
+    """Print a summary of choice list diff results to stdout."""
+    from colorama import Fore, Style
+
+    schemas_with_changes = len({r.event_value for r in results})
+    total_props          = len(results)
+    total_added          = sum(len(r.values_added)   for r in results)
+    total_removed        = sum(len(r.values_removed) for r in results)
+    total_relabelled     = sum(len(r.labels_changed) for r in results)
+
+    print(Style.BRIGHT + Fore.MAGENTA + f"\n{'='*50}")
+    print(Style.BRIGHT + Fore.MAGENTA + f"  CHOICE LIST DIFF — {conservancy.upper()}")
+    print(Style.BRIGHT + Fore.MAGENTA + f"{'='*50}")
+    print(Fore.GREEN  + f"  Schemas with changes : {schemas_with_changes}")
+    print(Fore.GREEN  + f"  Properties affected  : {total_props}")
+    print(Fore.GREEN  + f"  Values added         : {total_added}")
+    print(Fore.RED    + f"  Values removed       : {total_removed}")
+    print(Fore.YELLOW + f"  Labels changed       : {total_relabelled}")
+
+    if not verbose or not results:
+        return
+
+    # Group by event_value for readable output
+    by_schema: Dict[str, List[ChoiceListDiffResult]] = {}
+    for r in results:
+        by_schema.setdefault(r.event_value, []).append(r)
+
+    for ev in sorted(by_schema):
+        print(Fore.CYAN + f"\n  {ev}")
+        for r in sorted(by_schema[ev], key=lambda x: x.prop_name):
+            print(Fore.CYAN + f"    [{r.prop_name}]")
+            for v in r.values_added:
+                print(Fore.GREEN  + f"      + {v}")
+            for v in r.values_removed:
+                print(Fore.RED    + f"      - {v}")
+            for val, (old, new) in sorted(r.labels_changed.items()):
+                print(Fore.YELLOW + f"      ~ {val}: '{old}' → '{new}'")

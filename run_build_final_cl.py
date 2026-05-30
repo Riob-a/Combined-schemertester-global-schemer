@@ -10,10 +10,13 @@ from colorama import init, Fore, Style
 import json
 
 from build_global_schemas_final_cl import build_global_schemas, BuildMode, latest_schema_export
+from master_config_reader import load_master_config, iter_conservancy_frames
 from er_schema_diff import (
     load_server_state,
     diff_against_server,
     print_diff_summary,
+    diff_choice_lists,
+    print_choice_list_diff_summary,
     DiffAction,
 )
 
@@ -179,6 +182,13 @@ def main():
         action="store_true",
         help="Run only the diff (change preview) — skip the legacy deployable list",
     )
+    parser.add_argument(
+        "--master-config",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to master_config.xlsx — use instead of scanning per-conservancy Excel files",
+    )
 
     args = parser.parse_args()
 
@@ -313,34 +323,86 @@ def main():
     print(Fore.MAGENTA + "GLOBAL DRY RUN START")
     print(Fore.MAGENTA + "==============================")
 
-    # ── Process each Excel file ──────────────────────────────────────
-    for file_path in excel_files:
-        print(Fore.CYAN + f"\nProcessing: {file_path}")
-        df = pd.read_excel(file_path)
-        total_rows += len(df)
+    # ── Master config mode ───────────────────────────────────────────
+    if args.master_config:
+        from pathlib import Path as _Path
+        mc_path = _Path(args.master_config)
+        print(Fore.CYAN + f"\nUsing master config: {mc_path}")
+        mc_frames = load_master_config(mc_path)
+        file_iter = [
+            (conservancy, df)
+            for conservancy, df in iter_conservancy_frames(mc_frames)
+        ]
+    else:
+        file_iter = None  # will use Excel files below
 
-        conservancy = (
-            os.path.splitext(os.path.basename(file_path))[0]
-            .replace("schemas-", "")
-        )
+    # ── Process each conservancy ─────────────────────────────────────
+    if file_iter is not None:
+        for conservancy, df in file_iter:
+            print(Fore.CYAN + f"\nProcessing (master config): {conservancy}")
+            total_rows += len(df)
 
-        # ── 1. Legacy deployable-list build (PREVIEW mode) ──────────
-        if not args.diff_only:
-            deployed = build_global_schemas(
-                df,
-                file_path=file_path,
-                server_config_dirs=SERVER_CONFIG_DIRS,
-                mode=BuildMode.PREVIEW,
+            if not args.diff_only:
+                deployed = build_global_schemas(
+                    df,
+                    file_path=f"master_config:{conservancy}",
+                    server_config_dirs=SERVER_CONFIG_DIRS,
+                    mode=BuildMode.PREVIEW,
+                )
+                grouped_deployed[conservancy].extend(deployed)
+
+            diff_results = run_diff_for_conservancy(df, conservancy, verbose=args.verbose)
+            grouped_diff[conservancy].extend(diff_results)
+
+            server_name  = CONSERVANCY_SERVER_MAP.get(conservancy.lower())
+            server_state = get_server_state(server_name) if server_name else None
+            if server_state:
+                cl_results = diff_choice_lists(server_state, conservancy_name=conservancy)
+                print_choice_list_diff_summary(cl_results, conservancy, verbose=args.verbose)
+            else:
+                print(Fore.YELLOW + f"\n  ⚠ No server export for {conservancy.upper()} — skipping choice list diff.")
+
+    else:
+        # ── Process each Excel file ──────────────────────────────────────
+        for file_path in excel_files:
+            print(Fore.CYAN + f"\nProcessing: {file_path}")
+            df = pd.read_excel(file_path)
+            total_rows += len(df)
+
+            conservancy = (
+                os.path.splitext(os.path.basename(file_path))[0]
+                .replace("schemas-", "")
             )
-            grouped_deployed[conservancy].extend(deployed)
 
-        # ── 2. Diff against live server export ───────────────────────
-        diff_results = run_diff_for_conservancy(
-            df,
-            conservancy,
-            verbose=args.verbose,
-        )
-        grouped_diff[conservancy].extend(diff_results)
+            # ── 1. Legacy deployable-list build (PREVIEW mode) ──────────
+            if not args.diff_only:
+                deployed = build_global_schemas(
+                    df,
+                    file_path=file_path,
+                    server_config_dirs=SERVER_CONFIG_DIRS,
+                    mode=BuildMode.PREVIEW,
+                )
+                grouped_deployed[conservancy].extend(deployed)
+
+            # ── 2. Diff against live server export ───────────────────────
+            diff_results = run_diff_for_conservancy(
+                df,
+                conservancy,
+                verbose=args.verbose,
+            )
+            grouped_diff[conservancy].extend(diff_results)
+
+            # ── 3. Choice list diff ───────────────────────────────────────
+            server_name  = CONSERVANCY_SERVER_MAP.get(conservancy.lower())
+            server_state = get_server_state(server_name) if server_name else None
+            if server_state:
+                cl_results = diff_choice_lists(server_state, conservancy_name=conservancy)
+                print_choice_list_diff_summary(cl_results, conservancy, verbose=args.verbose)
+            else:
+                print(
+                    Fore.YELLOW
+                    + f"\n  ⚠ No server export for {conservancy.upper()} — skipping choice list diff."
+                )
 
     # ── Global legacy summary ────────────────────────────────────────
     if not args.diff_only:
