@@ -179,7 +179,7 @@ def build_global_schemas(
 
     false_count = 0
     blank_count = 0
-    system_count = 0
+    # system_count = 0 # DRY RUN: system flag filtering disabled
 
     # ─────────────────────────────────────────────
     # PRELOAD SERVER EXPORTS
@@ -228,10 +228,10 @@ def build_global_schemas(
             else:
                 blank_count += 1
             continue
-
-        if flag == "system":
-            system_count += 1
-            continue
+        # DRY RUN: system flag filtering disabled
+        # if flag == "system":
+        #     system_count += 1
+        #     continue
 
         legacy_id = str(row.get("event_category_id") or "").strip()
         borana_id = str(row.get("borana_schema_id") or "").strip()
@@ -335,7 +335,7 @@ def build_global_schemas(
         f"Deployed: {len(deployed)}\n"
         f"Inactive (False): {false_count}\n"
         f"Inactive (Blank): {blank_count}\n"
-        f"System flagged: {system_count}\n"
+        # f"System flagged: {system_count}\n"
         f"Missing: {len(missing)}\n"
         f"Ambiguous: {len(ambiguous)}"
     )
